@@ -1,21 +1,23 @@
 # GraphQL CRUD Application with PostgreSQL
 
-This repository implements a GraphQL CRUD API for managing `Person` records. The application is split into modular files for database access, schema definition, resolver logic, and server setup.
+A versioned GraphQL CRUD API for managing `Person` records, built with Express, Apollo Server, and PostgreSQL.
 
 ## Project structure
 
-- `main.js` — root launcher, starts the GraphQL server
-- `src/db.js` — PostgreSQL connection setup and schema initialization
-- `src/schema.js` — GraphQL type definitions and API schema
-- `src/resolvers.js` — query and mutation resolver implementations
-- `src/server.js` — Express/Apollo Server configuration and HTTP endpoints
-- `.env.example` — database connection environment variables template
+```
+main.js                  — root launcher
+src/
+  server.js              — Express/Apollo setup, CORS, health check
+  db.js                  — PostgreSQL connection pool and schema init
+  v1/
+    schema.js            — GraphQL type definitions (v1)
+    resolvers.js         — query and mutation resolvers (v1)
+```
 
 ## Prerequisites
 
-- Node.js 18+ or compatible runtime
-- PostgreSQL instance accessible from this machine
-- Docker is optional, but supported for running PostgreSQL in a container
+- Node.js 18+
+- PostgreSQL instance accessible from this machine (or Docker)
 
 ## Setup
 
@@ -25,18 +27,21 @@ This repository implements a GraphQL CRUD API for managing `Person` records. The
 npm install
 ```
 
-2. Create a `.env` file from the example:
+2. Create a `.env` file:
 
 ```bash
 cp .env.example .env
 ```
 
-3. Configure your PostgreSQL connection values in `.env`.
+3. Fill in your PostgreSQL connection values in `.env`.
 
-4. Ensure the database is available. With Docker, one example command is:
+4. Start PostgreSQL (Docker example):
 
 ```bash
-docker run --name my-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=graphql_db -p 5432:5432 -d postgres
+docker run --name my-postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=graphql_db \
+  -p 5432:5432 -d postgres
 ```
 
 ## Run the server
@@ -45,47 +50,102 @@ docker run --name my-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=graph
 npm start
 ```
 
-Once the server is running, the GraphQL endpoint will be available at:
+| Endpoint                                    | Description             |
+| ------------------------------------------- | ----------------------- |
+| `POST http://localhost:4000/api/v1/graphql` | GraphQL API             |
+| `GET  http://localhost:4000/health`         | Health check (pings DB) |
 
-```
-http://localhost:4000/graphql
-```
-
-## GraphQL API
+## GraphQL API — v1
 
 ### Queries
 
-- `getPerson` — fetch all people
-- `getPersonById(_id: ID!)` — fetch a person by ID
+| Operation                         | Description                    |
+| --------------------------------- | ------------------------------ |
+| `apiVersion`                      | Returns `"v1"`                 |
+| `people(first: Int, offset: Int)` | Paginated list of people       |
+| `person(id: ID!)`                 | Fetch a single person by ID    |
+| ~~`getPerson`~~                   | Deprecated — use `people`      |
+| ~~`getPersonById(_id: ID!)`~~     | Deprecated — use `person(id:)` |
 
 ### Mutations
 
-- `addPerson(firstName, lastName, age, email, phone, address)` — create a new person
-- `updatePerson(_id, ...)` — update an existing person
-- `deletePerson(_id)` — remove a person
+All mutations return a `PersonPayload`:
 
-## Example Postman request
+```graphql
+type PersonPayload {
+  success: Boolean!
+  message: String
+  person: Person
+}
+```
 
-Use `POST http://localhost:4000/graphql` with the header `Content-Type: application/json`.
+| Operation                                          | Description         |
+| -------------------------------------------------- | ------------------- |
+| `addPerson(input: AddPersonInput!)`                | Create a new person |
+| `updatePerson(id: ID!, input: UpdatePersonInput!)` | Partial update      |
+| `deletePerson(id: ID!)`                            | Remove a person     |
+
+## Example requests
+
+Use `POST http://localhost:4000/api/v1/graphql` with `Content-Type: application/json`.
+
+### List people (paginated)
+
+```json
+{
+  "query": "query { people(first: 10, offset: 0) { totalCount nodes { id firstName lastName email } } }"
+}
+```
 
 ### Add a person
 
 ```json
 {
-  "query": "mutation AddPerson($firstName: String!, $lastName: String!, $age: Int, $email: String, $phone: String, $address: String) { addPerson(firstName: $firstName, lastName: $lastName, age: $age, email: $email, phone: $phone, address: $address) { _id firstName lastName age email phone address } }",
+  "query": "mutation AddPerson($input: AddPersonInput!) { addPerson(input: $input) { success message person { id firstName lastName } } }",
   "variables": {
-    "firstName": "Jane",
-    "lastName": "Doe",
-    "age": 28,
-    "email": "jane.doe@example.com",
-    "phone": "555-0101",
-    "address": "123 Main Street"
+    "input": {
+      "firstName": "Jane",
+      "lastName": "Doe",
+      "age": 28,
+      "email": "jane.doe@example.com",
+      "phone": "555-0101",
+      "address": "123 Main Street"
+    }
   }
 }
 ```
 
+### Update a person
+
+```json
+{
+  "query": "mutation UpdatePerson($id: ID!, $input: UpdatePersonInput!) { updatePerson(id: $id, input: $input) { success message person { id firstName lastName age } } }",
+  "variables": {
+    "id": "your-person-id",
+    "input": { "age": 29 }
+  }
+}
+```
+
+### Delete a person
+
+```json
+{
+  "query": "mutation DeletePerson($id: ID!) { deletePerson(id: $id) { success message person { id firstName lastName } } }",
+  "variables": { "id": "your-person-id" }
+}
+```
+
+### Health check
+
+```bash
+curl http://localhost:4000/health
+# { "status": "ok", "version": "v1", "timestamp": "..." }
+```
+
 ## Notes
 
-- The database table is created automatically on startup if it does not already exist.
-- The code is intentionally modular so each layer can be extended or tested independently.
-- The GET `/graphql` handler supports simple GraphQL query execution via query string parameters.
+- The `people` table is created automatically on startup if it does not exist.
+- Introspection is disabled when `NODE_ENV=production`.
+- Error responses omit internal stack details in production.
+- To add a v2 API, create `src/v2/schema.js` and `src/v2/resolvers.js`, then mount a second Apollo instance at `/api/v2/graphql` in `server.js`.

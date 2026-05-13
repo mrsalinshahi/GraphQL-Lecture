@@ -1,51 +1,68 @@
 import express from 'express';
 import { ApolloServer } from 'apollo-server-express';
-import typeDefs from './schema.js';
-import resolvers from './resolvers.js';
-import { setupDatabase } from './db.js';
+import typeDefs from './v1/schema.js';
+import resolvers from './v1/resolvers.js';
+import { pool, setupDatabase } from './db.js';
 
-/**
- * Initialize and start the GraphQL application server.
- *
- * This function performs database schema setup before exposing the GraphQL
- * endpoint and supporting GET query execution for convenience.
- */
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+function corsMiddleware(req, res, next) {
+  res.header('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+}
+
 async function startServer() {
   await setupDatabase();
 
   const app = express();
-  const server = new ApolloServer({ typeDefs, resolvers });
-  await server.start();
-  server.applyMiddleware({ app, path: '/graphql' });
+  app.use(corsMiddleware);
 
-  /**
-   * Allow simple GET-based GraphQL queries via query string parameters.
-   *
-   * Note: POST remains the recommended method for GraphQL operations,
-   * especially for mutations and larger payloads.
-   */
-  app.get('/graphql', async (req, res) => {
-    const query = String(req.query.query || '');
-    if (!query) {
-      return res.status(400).json({ error: 'Missing query parameter' });
+  // Health check — useful for load balancers and uptime monitors
+  app.get('/health', async (req, res) => {
+    try {
+      await pool.query('SELECT 1');
+      res.json({
+        status: 'ok',
+        version: 'v1',
+        timestamp: new Date().toISOString(),
+      });
+    } catch {
+      res.status(503).json({
+        status: 'error',
+        version: 'v1',
+        timestamp: new Date().toISOString(),
+      });
     }
-
-    let variables;
-    if (req.query.variables) {
-      try {
-        variables = JSON.parse(String(req.query.variables));
-      } catch (error) {
-        return res.status(400).json({ error: 'variables must be valid JSON' });
-      }
-    }
-
-    const result = await server.executeOperation({ query, variables });
-    return res.json(result);
   });
+
+  const server = new ApolloServer({
+    typeDefs,
+    resolvers,
+
+    // Disable introspection in production to avoid schema exposure
+    introspection: !IS_PROD,
+
+    // Inject pool into every resolver via context instead of importing directly
+    context: () => ({ pool }),
+
+    // Strip internal stack details from production error responses
+    formatError: (err) => ({
+      message: err.message,
+      code: err.extensions?.code || 'INTERNAL_SERVER_ERROR',
+      ...(IS_PROD ? {} : { locations: err.locations, path: err.path }),
+    }),
+  });
+
+  await server.start();
+  server.applyMiddleware({ app, path: '/api/v1/graphql' });
 
   const port = process.env.PORT || 4000;
   app.listen(port, () => {
-    console.log(`GraphQL server ready at http://localhost:${port}${server.graphqlPath}`);
+    console.log(`GraphQL API v1  →  http://localhost:${port}/api/v1/graphql`);
+    console.log(`Health check    →  http://localhost:${port}/health`);
   });
 }
 
